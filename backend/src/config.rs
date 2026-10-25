@@ -10,7 +10,7 @@ use crate::trust_proxy::TrustProxy;
 
 const API_TOKEN_MESSAGE: &str = "Remnawave Dashboard → Remnawave Settings → API Tokens. Create a new API Token and set it in the .env file.";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub app_port: u16,
     pub panel_url: String,
@@ -30,6 +30,20 @@ pub struct Config {
     pub development: bool,
     pub debug_logs: bool,
     pub frontend_dir: PathBuf,
+}
+
+impl std::fmt::Debug for Config {
+    /// Never prints credentials (API token, JWT secret, Marzban keys, ...).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("app_port", &self.app_port)
+            .field("panel_url", &self.panel_url)
+            .field("custom_sub_prefix", &self.custom_sub_prefix)
+            .field("trust_proxy", &self.trust_proxy)
+            .field("marzban_enabled", &self.marzban_enabled)
+            .field("development", &self.development)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Config {

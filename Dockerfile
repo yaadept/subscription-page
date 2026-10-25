@@ -30,4 +30,6 @@ COPY frontend/dist/ ./frontend/
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --start-interval=2s --retries=3 \
     CMD ["rw-subpage", "--healthcheck"]
 
+USER 65532:65532
+
 ENTRYPOINT ["rw-subpage"]

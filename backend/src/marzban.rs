@@ -60,9 +60,8 @@ impl MarzbanResolver {
 
         let sanitized = sanitize_username(&decoded.username);
         tracing::info!(
-            "Decoded Marzban username: {}, sanitized username: {}",
-            decoded.username,
-            sanitized
+            "Decoded Marzban username: {:?}, sanitized username: {sanitized}",
+            decoded.username
         );
 
         match self.panel.get_user_by_username(client_ip, &sanitized).await {

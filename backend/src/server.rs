@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use axum::body::Body;
 use hyper::body::Incoming;
+use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::Request;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use hyper_util::server::conn::auto::Builder;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
@@ -92,13 +92,12 @@ where
             }
         });
 
-        let mut builder = Builder::new(TokioExecutor::new());
-        builder
-            .http1()
+        // HTTP/1.1 only (as the Node version): the service sits behind a reverse proxy.
+        let conn = http1::Builder::new()
             .timer(TokioTimer::new())
-            .header_read_timeout(Duration::from_secs(30));
-        let conn = builder.serve_connection_with_upgrades(TokioIo::new(stream), service);
-        let conn = graceful.watch(conn.into_owned());
+            .header_read_timeout(Duration::from_secs(30))
+            .serve_connection(TokioIo::new(stream), service);
+        let conn = graceful.watch(conn);
         tokio::spawn(async move {
             // Errors here are deliberate drops or client disconnects.
             let _ = conn.await;

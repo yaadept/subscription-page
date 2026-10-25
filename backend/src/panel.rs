@@ -24,6 +24,30 @@ const URI_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'(')
     .remove(b')');
 
+const SENSITIVE: [&str; 4] = [
+    "authorization",
+    "x-api-key",
+    "cf-access-client-secret",
+    "cookie",
+];
+
+/// Panel credentials (Caddy key, Cloudflare secret, cookies) must not follow a redirect to
+/// another origin, so only same-origin redirects (max 5) are followed.
+fn same_origin_redirects() -> redirect::Policy {
+    redirect::Policy::custom(|attempt| {
+        let same = attempt.previous().last().is_some_and(|prev| {
+            prev.scheme() == attempt.url().scheme()
+                && prev.host_str() == attempt.url().host_str()
+                && prev.port_or_known_default() == attempt.url().port_or_known_default()
+        });
+        if same && attempt.previous().len() < 5 {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 pub fn encode_component(s: &str) -> String {
     utf8_percent_encode(s, URI_COMPONENT).to_string()
 }
@@ -84,14 +108,15 @@ impl PanelClient {
     pub fn new(config: &Config) -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
-            .redirect(redirect::Policy::limited(5))
+            .redirect(same_origin_redirects())
             .build()
             .map_err(|e| e.to_string())?;
 
         let mut defaults = HeaderMap::new();
         let mut put = |name: &'static str, value: &str| -> Result<(), String> {
-            let v =
+            let mut v =
                 HeaderValue::from_str(value).map_err(|_| format!("invalid value for {name}"))?;
+            v.set_sensitive(SENSITIVE.contains(&name));
             defaults.insert(HeaderName::from_static(name), v);
             Ok(())
         };

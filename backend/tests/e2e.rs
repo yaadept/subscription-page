@@ -36,6 +36,7 @@ struct Recorded {
 struct Panel {
     log: Arc<Mutex<Vec<Recorded>>>,
     revoked_user: bool,
+    redirect_to: Option<String>,
 }
 
 impl Panel {
@@ -136,6 +137,11 @@ async fn start_panel(panel: Panel) -> SocketAddr {
         p.record(format!("/api/sub/{path}"), &h, String::new());
         if path.starts_with("missing") {
             return StatusCode::NOT_FOUND.into_response();
+        }
+        if path == "redir" {
+            if let Some(to) = &p.redirect_to {
+                return (StatusCode::FOUND, [("location", to.as_str())]).into_response();
+            }
         }
         (
             [
@@ -526,6 +532,70 @@ async fn browser_flow_serves_page_cookie_config_and_assets() {
     assert!(
         h.is_dropped(h.get("/assets/", Some(BROWSER)).header("cookie", &session))
             .await
+    );
+}
+
+#[tokio::test]
+async fn assets_cannot_be_reached_without_a_session_by_path_tricks() {
+    let h = harness(&[], Panel::default()).await;
+    for path in [
+        "/assets/app.js",
+        "//assets/app.js",
+        "/assets//app.js",
+        "/assets/./app.js",
+        "/%61ssets/app.js",
+        "/ASSETS/app.js",
+        "/assets/app.js/",
+        "/assets/.app-config-v2.json",
+        "/assets/%2eapp-config-v2.json",
+        "/assets/.hidden",
+    ] {
+        let reply = h
+            .raw(&format!("GET {path} HTTP/1.1\r\nHost: x\r\nUser-Agent: {BROWSER}\r\nX-Forwarded-For: 1.1.1.1\r\nX-Forwarded-Proto: https\r\nConnection: close\r\n\r\n"))
+            .await;
+        assert!(
+            reply.is_empty(),
+            "{path} answered without a session: {reply:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dotfiles_in_assets_are_not_served_even_with_a_session() {
+    let h = harness(&[], Panel::default()).await;
+    std::fs::write(h._dir.path().join("assets/.secret"), "s").unwrap();
+    let page = h.get("/abc", Some(BROWSER)).send().await.unwrap();
+    let cookie = page.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(
+        h.is_dropped(
+            h.get("/assets/.secret", Some(BROWSER))
+                .header("cookie", &cookie)
+        )
+        .await
+    );
+}
+
+#[tokio::test]
+async fn panel_redirects_to_other_origins_are_not_followed() {
+    // A second server that must never be contacted.
+    let victim = Panel::default();
+    let victim_addr = start_panel(victim.clone()).await;
+    let panel = Panel {
+        redirect_to: Some(format!("http://{victim_addr}/api/sub/stolen")),
+        ..Panel::default()
+    };
+    let h = harness(&[("CADDY_AUTH_API_TOKEN", "caddy-secret")], panel).await;
+    assert!(h.is_dropped(h.get("/redir", Some("Happ/1.0"))).await);
+    assert_eq!(
+        victim.count("/api/sub/stolen"),
+        0,
+        "credentials followed a cross-origin redirect"
     );
 }
 

@@ -121,6 +121,14 @@ async fn gate(State(st): State<Arc<AppState>>, mut req: Request, next: Next) -> 
     }
 
     if path_is_assets(&path) {
+        // sirv does not serve dotfiles; the only dot-path under /assets is the app config route.
+        if path != APP_CONFIG_ROUTE
+            && path
+                .split('/')
+                .any(|seg| seg.starts_with('.') || seg.to_ascii_lowercase().starts_with("%2e"))
+        {
+            return drop_response();
+        }
         let cookies = req
             .headers()
             .get_all(header::COOKIE)
@@ -236,7 +244,7 @@ async fn access_log(req: Request, next: Next) -> Response {
     };
 
     let resp = next.run(req).await;
-    if resp.extensions().get::<DropConnection>().is_none() {
+    if !path_is_assets(uri.path()) && resp.extensions().get::<DropConnection>().is_none() {
         let len = resp
             .headers()
             .get(header::CONTENT_LENGTH)

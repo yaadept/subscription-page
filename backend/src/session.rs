@@ -77,7 +77,7 @@ pub fn cookie_value<'a>(
 pub fn set_cookie_header(token: &str, secure: bool) -> String {
     let expires = chrono::Utc::now() + chrono::Duration::seconds(COOKIE_MAX_AGE_SECS);
     let mut c = format!(
-        "{COOKIE_NAME}={token}; Max-Age={COOKIE_MAX_AGE_SECS}; Path=/; Expires={}; HttpOnly",
+        "{COOKIE_NAME}={token}; Max-Age={COOKIE_MAX_AGE_SECS}; Path=/; Expires={}; HttpOnly; SameSite=Lax",
         expires.format("%a, %d %b %Y %H:%M:%S GMT")
     );
     if secure {
