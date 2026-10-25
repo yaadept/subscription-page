@@ -138,6 +138,9 @@ async fn start_panel(panel: Panel) -> SocketAddr {
         if path.starts_with("missing") {
             return StatusCode::NOT_FOUND.into_response();
         }
+        if path == "huge" {
+            return vec![b'x'; 33 * 1024 * 1024].into_response();
+        }
         if path == "redir" {
             if let Some(to) = &p.redirect_to {
                 return (StatusCode::FOUND, [("location", to.as_str())]).into_response();
@@ -211,6 +214,7 @@ async fn start_panel(panel: Panel) -> SocketAddr {
 
 struct Harness {
     addr: SocketAddr,
+    panel_addr: SocketAddr,
     panel: Panel,
     client: reqwest::Client,
     _dir: tempfile::TempDir,
@@ -253,6 +257,7 @@ async fn harness(extra_env: &[(&str, &str)], panel: Panel) -> Harness {
         .unwrap();
     Harness {
         addr,
+        panel_addr,
         panel,
         client,
         _dir: dir,
@@ -597,6 +602,57 @@ async fn panel_redirects_to_other_origins_are_not_followed() {
         0,
         "credentials followed a cross-origin redirect"
     );
+}
+
+#[tokio::test]
+async fn oversized_panel_responses_are_refused() {
+    let h = harness(&[], Panel::default()).await;
+    assert!(h.is_dropped(h.get("/huge", Some("Happ/1.0"))).await);
+}
+
+#[tokio::test]
+async fn connection_limit_queues_extra_connections() {
+    let h = harness(&[], Panel::default()).await;
+    // Second server instance with a cap of 1, same state
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+    std::fs::write(dir.path().join("index.html"), INDEX_HTML).unwrap();
+    let env: HashMap<String, String> = [
+        ("REMNAWAVE_PANEL_URL", format!("http://{}", h.panel_addr)),
+        ("REMNAWAVE_API_TOKEN", "t".into()),
+        ("FRONTEND_DIR", dir.path().display().to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    let state = init_state(Config::from_map(&env).unwrap()).await.unwrap();
+    let listener = server::bind(0).unwrap();
+    let addr = SocketAddr::from(([127, 0, 0, 1], listener.local_addr().unwrap().port()));
+    tokio::spawn(server::serve_with_limit(
+        listener,
+        app::build_service(state),
+        std::future::pending(),
+        1,
+    ));
+
+    let req = "GET /internal/health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    let idle = TcpStream::connect(addr).await.unwrap(); // takes the only slot
+    let mut second = TcpStream::connect(addr).await.unwrap();
+    second.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let waiting =
+        tokio::time::timeout(Duration::from_millis(400), second.read_to_end(&mut buf)).await;
+    assert!(
+        waiting.is_err(),
+        "second connection must wait for a free slot"
+    );
+
+    drop(idle);
+    tokio::time::timeout(Duration::from_secs(3), second.read_to_end(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 200"));
 }
 
 #[tokio::test]

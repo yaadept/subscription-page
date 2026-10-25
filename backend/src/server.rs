@@ -14,7 +14,10 @@ use hyper::service::service_fn;
 use hyper::Request;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
+use std::sync::Arc;
+
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
 use crate::app::{DropConnection, RemoteAddr};
@@ -50,6 +53,9 @@ pub fn bind(port: u16) -> std::io::Result<TcpListener> {
         .or_else(|_| try_bind(SocketAddr::from(([0, 0, 0, 0], port))))
 }
 
+/// Simultaneous open connections; beyond this, new connections wait in the kernel backlog.
+pub const MAX_CONNECTIONS: usize = 10_000;
+
 pub async fn serve<S>(listener: TcpListener, router: S, shutdown: impl Future<Output = ()>)
 where
     S: tower::Service<Request<Body>, Response = axum::response::Response, Error = Infallible>
@@ -58,10 +64,30 @@ where
         + 'static,
     S::Future: Send,
 {
+    serve_with_limit(listener, router, shutdown, MAX_CONNECTIONS).await;
+}
+
+pub async fn serve_with_limit<S>(
+    listener: TcpListener,
+    router: S,
+    shutdown: impl Future<Output = ()>,
+    max_connections: usize,
+) where
+    S: tower::Service<Request<Body>, Response = axum::response::Response, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
     let graceful = GracefulShutdown::new();
+    let permits = Arc::new(Semaphore::new(max_connections));
     tokio::pin!(shutdown);
 
     loop {
+        let permit = tokio::select! {
+            p = permits.clone().acquire_owned() => p.expect("semaphore is never closed"),
+            () = &mut shutdown => break,
+        };
         let (stream, peer) = tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok(conn) => conn,
@@ -99,6 +125,7 @@ where
             .serve_connection(TokioIo::new(stream), service);
         let conn = graceful.watch(conn);
         tokio::spawn(async move {
+            let _permit = permit;
             // Errors here are deliberate drops or client disconnects.
             let _ = conn.await;
         });

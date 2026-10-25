@@ -52,6 +52,26 @@ pub fn encode_component(s: &str) -> String {
     utf8_percent_encode(s, URI_COMPONENT).to_string()
 }
 
+/// Upper bound for any single panel response body (subscriptions are a few KiB to a few MiB).
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+async fn read_limited(mut resp: reqwest::Response) -> Result<Bytes, PanelError> {
+    if resp
+        .content_length()
+        .is_some_and(|l| l > MAX_BODY_BYTES as u64)
+    {
+        return Err(PanelError::Shape("response body too large"));
+    }
+    let mut buf = bytes::BytesMut::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(PanelError::Shape("response body too large"));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf.freeze())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PanelError {
     #[error("{0}")]
@@ -166,7 +186,8 @@ impl PanelClient {
         if !status.is_success() {
             return Err(PanelError::Status(status));
         }
-        Ok(resp.json::<Value>().await?)
+        let body = read_limited(resp).await?;
+        serde_json::from_slice(&body).map_err(|_| PanelError::Shape("invalid JSON"))
     }
 
     pub async fn get_metadata_version(&self) -> Result<String, PanelError> {
@@ -330,7 +351,7 @@ impl PanelClient {
                 out.append(name.clone(), value.clone());
             }
         }
-        let body = resp.bytes().await?;
+        let body = read_limited(resp).await?;
         Ok(SubscriptionResponse { body, headers: out })
     }
 }
